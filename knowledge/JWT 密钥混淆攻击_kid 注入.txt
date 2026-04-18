@@ -1,0 +1,187 @@
+JWT 密钥混淆攻击（kid 注入专项）
+
+【0】核心认知：JWT kid 注入漏洞本质
+
+一句话本质： 攻击者控制 JWT Header 中 kid
+字段，使服务端读取错误密钥进行验签，从而伪造合法 Token。
+
+攻击目标： 绕过签名验证 伪造管理员身份 读取 flag
+
+【1】JWT 基础结构复习
+
+JWT 结构：
+
+Header.Payload.Signature
+
+示例：
+
+eyJhbGciOiJIUzI1NiIsImtpZCI6InRlc3QifQ . eyJ1c2VyIjoiZ3Vlc3QifQ .
+signature
+
+Header 示例：
+
+{ “alg”: “HS256”, “kid”: “key1” }
+
+【2】kid 字段作用
+
+作用：
+
+指定服务器读取哪个密钥进行验证
+
+典型逻辑：
+
+key = read_key(kid) verify(token, key)
+
+漏洞原因：
+
+kid 可控 服务器直接拼接路径读取文件
+
+【3】典型漏洞代码模式
+
+危险代码：
+
+key = open(“/keys/” + kid).read()
+
+攻击者可构造：
+
+kid=../../../../etc/passwd
+
+触发路径遍历读取密钥
+
+【4】攻击方式一：路径遍历读取密钥
+
+Payload 示例：
+
+{ “alg”:“HS256”, “kid”:“../../../../../../dev/null” }
+
+服务器读取空密钥
+
+攻击者使用空密钥重新签名
+
+实现伪造 Token
+
+【5】攻击方式二：读取系统文件作为密钥
+
+示例：
+
+kid=../../../../../../etc/passwd
+
+服务器将 passwd 内容作为签名密钥
+
+攻击者同步使用该内容签名
+
+完成认证绕过
+
+【6】攻击方式三：SQL 注入型 kid
+
+危险代码：
+
+SELECT key FROM jwt_keys WHERE kid=‘xxx’
+
+攻击 payload：
+
+kid=1’ OR ‘1’=’1
+
+返回默认密钥
+
+绕过验证
+
+【7】攻击方式四：命令执行型 kid
+
+危险代码：
+
+system(“cat keys/” + kid)
+
+payload：
+
+kid=../../../../flag
+
+直接读取 flag
+
+【8】攻击方式五：算法混淆攻击结合 kid
+
+Header 修改为：
+
+{ “alg”:“HS256” }
+
+原服务器算法：
+
+RS256
+
+攻击流程：
+
+使用公钥作为 HS256 密钥
+
+重新签名 Token
+
+绕过认证
+
+【9】CTF 标准利用流程（SOP）
+
+步骤1：抓取 Token
+
+Cookie / Authorization Header
+
+步骤2：解析 Header
+
+查看是否存在：
+
+kid
+
+步骤3：测试路径遍历
+
+示例：
+
+../../../../etc/passwd
+
+步骤4：测试空文件密钥
+
+/dev/null
+
+步骤5：重新签名 Token
+
+步骤6：访问管理员接口
+
+/admin /api/admin /flag
+
+【10】常用工具
+
+jwt.io
+
+在线解析 Token
+
+jwt_tool
+
+自动攻击 kid 注入
+
+安装：
+
+pip install jwt_tool
+
+示例：
+
+jwt_tool token -X k
+
+【11】CTF 高频利用目标
+
+优先访问：
+
+/admin /api/admin /debug /flag /api/flag
+
+【12】比赛速查 Checklist
+
+解析 JWT
+
+查看 alg
+
+查看 kid
+
+测试路径遍历
+
+测试空密钥
+
+重新签名
+
+访问 admin
+
+读取 flag

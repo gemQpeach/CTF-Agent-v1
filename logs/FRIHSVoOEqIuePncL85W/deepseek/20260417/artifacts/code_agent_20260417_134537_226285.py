@@ -1,0 +1,1 @@
+# 代码生成失败: 502 Server Error: Bad Gateway for url: http://10.0.0.24/522_npb9c039/chat/completions

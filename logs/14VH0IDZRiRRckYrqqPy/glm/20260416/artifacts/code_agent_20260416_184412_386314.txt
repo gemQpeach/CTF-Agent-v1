@@ -1,0 +1,71 @@
+[Task]
+解码以下base64字符串并分析：
+gASVJwAAAAAAAAB9lCiMBXRoZW1llIwEZGFya5SMCGxhbmd1YWdllIwFemgtQ26UdS4=
+
+1. 先base64解码得到字节
+2. 尝试用pickle.loads反序列化，看看得到的Python对象
+3. 也尝试用pickletools.dis反汇编，看看opcode
+4. 这看起来是pickle序列化数据，分析其结构
+
+同时，对session cookie进行JWT解码：
+eyJpc19hZG1pbiI6dHJ1ZSwidXNlcm5hbWUiOiJyb290YWRtaW4ifQ.aeC9GQ.gmkhY088XDEEIJpV-77DtAF3DhY
+
+解码JWT的payload部分（第一段base64）
+
+[Context]
+
+
+[Output]
+[*] Original Base64 String: gASVJwAAAAAAAAB9lCiMBXRoZW1llIwEZGFya5SMCGxhbmd1YWdllIwFemgtQ26UdS4=
+
+[+] Decoded Bytes: b"\x80\x04\x95'\x00\x00\x00\x00\x00\x00\x00}\x94(\x8c\x05theme\x94\x8c\x04dark\x94\x8c\x08language\x94\x8c\x05zh-Cn\x94u."
+
+[*] Pickle Deserialization (pickle.loads):
+    Type: <class 'dict'>
+    Object: {'theme': 'dark', 'language': 'zh-Cn'}
+
+[*] Pickle Disassembly (pickletools.dis):
+    0: \x80 PROTO      4
+    2: \x95 FRAME      39
+   11: }    EMPTY_DICT
+   12: \x94 MEMOIZE    (as 0)
+   13: (    MARK
+   14: \x8c     SHORT_BINUNICODE 'theme'
+   21: \x94     MEMOIZE    (as 1)
+   22: \x8c     SHORT_BINUNICODE 'dark'
+   28: \x94     MEMOIZE    (as 2)
+   29: \x8c     SHORT_BINUNICODE 'language'
+   39: \x94     MEMOIZE    (as 3)
+   40: \x8c     SHORT_BINUNICODE 'zh-Cn'
+   47: \x94     MEMOIZE    (as 4)
+   48: u        SETITEMS   (MARK at 13)
+   49: .    STOP
+highest protocol among opcodes = 4
+
+[*] Structure Analysis:
+    The serialized data represents a Python dictionary with 2 key-value pairs.
+    It uses pickle protocol 5 (or similar) with specific opcodes:
+    - `}` (DICT): Marks the creation of a dictionary.
+    - `(` (MARK): Pushes a mark onto the stack for tuple/dict construction.
+    - `X` (BINUNICODE): Pushes a unicode string (the keys and values).
+    - `u` (SETITEMS): Pops mark and alternating key-value pairs to add to the dict.
+    - `. `(STOP): Stops execution.
+    Extracted Data Structure:
+      Key: 'theme' -> Value: 'dark'
+      Key: 'language' -> Value: 'zh-Cn'
+
+============================================================
+
+[*] Original JWT/Session Token: eyJpc19hZG1pbiI6dHJ1ZSwidXNlcm5hbWUiOiJyb290YWRtaW4ifQ.aeC9GQ.gmkhY088XDEEIJpV-77DtAF3DhY
+
+[+] Decoded JWT Payload:
+    Raw JSON String: {"is_admin":true,"username":"rootadmin"}
+    Parsed Python Object: {'is_admin': True, 'username': 'rootadmin'}
+    Is Admin: True
+    Username: rootadmin
+
+[Stderr]
+
+
+[Flag]
+None

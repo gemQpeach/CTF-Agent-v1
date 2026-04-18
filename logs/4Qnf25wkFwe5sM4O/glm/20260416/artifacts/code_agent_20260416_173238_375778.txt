@@ -1,0 +1,37 @@
+[Task]
+Perform SQL injection on a FastAPI/SQLite endpoint at http://10.0.162.112:80/jobs
+
+The endpoint accepts POST requests with JSON body {"job_type": "value"}.
+
+Key observations:
+- Sending {"job_type": "private"} returns 403 "Only admins can see private jobs"
+- Sending {"job_type": "PRIVATE"} or {"job_type": "Private"} returns 200 with empty array [] (bypasses the admin check due to case-sensitive comparison)
+- Sending {"job_type": "back-end"} returns 200 with data like [{"id":3,"name":"Senior Backend Dev","type":"back-end","description":"django"}]
+- Sending {"job_type": "front-end"} returns 200 with data like [{"id":1,"name":"Senior Frontend Dev","type":"front-end","description":"reactjs"}, {"id":4,"name":"Frontend Dev","type":"front-end","description":"angular"}]
+- Sending {"job_type": ""} returns all 3 jobs
+- Single quotes in job_type cause 500 Internal Server Error, confirming SQL injection vulnerability
+- ORDER BY and UNION SELECT with -- comments all return 500 too
+
+The response format is JSON array with objects having keys: id, name, type, description
+
+Please try the following SQL injection techniques systematically:
+1. UNION SELECT with different column counts (1-6), trying different comment styles (-- -, #, /*)
+2. Try LIKE injection: "job_type": "%" to see all records including private
+3. Try boolean-based: "job_type": "back-end' AND 1=1-- " vs "back-end' AND 1=2-- "
+4. Try time-based blind injection with SQLite randomblob()
+5. Try extracting table names from sqlite_master
+6. Try extracting data from any flag-related tables
+
+For each request, print the status code and response body.
+
+[Context]
+Target: http://10.0.162.112:80/jobs, POST, JSON body {"job_type": "value"}, SQLite backend, FastAPI/uvicorn
+
+[Output]
+
+
+[Stderr]
+# 代码生成失败: 429 Client Error: Too Many Requests for url: http://10.0.0.24/522_npb9c039/chat/completions
+
+[Flag]
+None

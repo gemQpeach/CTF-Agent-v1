@@ -1,0 +1,1 @@
+# 代码生成失败: 500 Server Error: Internal Server Error for url: http://10.0.0.24/522_npb9c039/chat/completions

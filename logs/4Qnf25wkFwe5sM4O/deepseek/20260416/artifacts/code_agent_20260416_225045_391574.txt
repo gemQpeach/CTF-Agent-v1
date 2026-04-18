@@ -1,0 +1,92 @@
+[Task]
+我需要分析这个CTF挑战的主页JavaScript代码。从之前的响应中，我看到：
+1. 服务器：http://10.0.162.112:80
+2. 主页有一个表单，通过fetch发送POST请求到/jobs端点
+3. 但直接访问/jobs端点返回"Method Not Allowed"
+
+请帮我编写一个Python脚本来：
+1. 获取主页HTML
+2. 提取JavaScript代码
+3. 分析表单提交的逻辑
+4. 尝试模拟表单提交的正确方式
+
+[Context]
+
+
+[Output]
+[*] Fetching homepage: http://10.0.162.112:80
+
+[+] Extracted JavaScript Code:
+document.getElementById('filter-form').addEventListener('submit', async function(event) {
+            event.preventDefault();
+            const jobType = document.getElementById('job-type').value;
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = '';
+
+            try {
+                const response = await fetch('/jobs', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ job_type: jobType })
+                });
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.length === 0) {
+                        resultDiv.innerHTML = '<div class="alert alert-warning" role="alert">No jobs found</div>';
+                    } else {
+                        let jobsTable = `
+                            <table class="table table-bordered mt-4">
+                                <thead>
+                                    <tr>
+                                        <th>ID</th>
+                                        <th>Name</th>
+                                        <th>Type</th>
+                                        <th>Description</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                        `;
+                        data.forEach(user => {
+                            jobsTable += `
+                                <tr>
+                                    <td>${user.id}</td>
+                                    <td>${user.name}</td>
+                                    <td>${user.type}</td>
+                                    <td>${user.description}</td>
+                                </tr>
+                            `;
+                        });
+                        jobsTable += '</tbody></table>';
+                        resultDiv.innerHTML = jobsTable;
+                    }
+                } else {
+                    const errorData = await response.json();
+                    resultDiv.innerHTML = `
+                        <div class="alert alert-danger" role="alert">
+                            Error: ${errorData.detail}
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                resultDiv.innerHTML = `
+                    <div class="alert alert-danger" role="alert">
+                        Network error or server is down.
+                    </div>
+                `;
+            }
+        });
+
+[+] Extracted Form Details:
+Form HTML: <div class="form-group">
+                        <label for="job-type">Filter by Job Type</label>
+                        <select id="job-type" class="form-control">
+                            <option value="">All</option>
+                 
+
+[Stderr]
+
+
+[Flag]
+None

@@ -1,0 +1,177 @@
+JS文件泄露敏感信息（高频题型专项手册）
+
+【0】核心认知：JS 泄露漏洞本质
+一句话本质： 前端 JavaScript
+文件中包含开发调试信息、接口地址、密钥、路径或逻辑信息，被攻击者直接读取利用。
+特点： 无需漏洞利用 无需代码执行 属于信息泄露类漏洞 但常作为攻击入口漏洞
+
+【1】JS 信息泄露常见来源
+静态资源路径： /js/ /static/ /assets/ /dist/ /build/
+常见文件： main.js app.js config.js index.js env.js bundle.js vendor.js
+
+【2】JS 泄露敏感信息分类
+高价值信息类型：
+接口地址： /api/admin /api/internal /debug/api
+测试接口： /test/login /dev/login
+隐藏后台路径： /admin_dev /manage_test /system/debug
+密钥信息： secret_key access_token jwt_secret apikey oss_key
+账号密码： username password
+调试信息： console.log(“debug”) debug=true
+版本信息： v1 test dev beta
+
+【3】JS 信息泄露识别特征
+常见提示语：
+static resource debug mode dev environment test environment source map
+enabled version=dev
+典型信号：
+config.js env.js debug.js test.js
+
+【4】SourceMap 泄露（高频CTF考点）
+
+检测路径：
+main.js.map app.js.map bundle.js.map
+访问示例：
+GET /static/js/main.js.map
+泄露内容包括：
+源码 接口路径 注释信息 变量名 函数逻辑
+
+【5】JS 中常见敏感字段关键词
+推荐搜索关键词：
+token secret password admin debug test key auth config env internal
+Burp / 浏览器搜索：
+Ctrl+Shift+F
+
+【6】JS 解题标准流程（CTF SOP）
+第一步：定位 JS 文件
+方法：
+查看源码 抓包 目录扫描
+重点目录：
+/static/ /js/ /assets/
+第二步：自动提取接口
+推荐工具：
+LinkFinder SecretFinder
+示例命令：
+python linkfinder.py -i main.js -o cli
+第三步：人工分析关键词
+重点搜索：
+admin debug token password
+第四步：访问隐藏接口
+示例：
+/api/debug /admin/test /system/internal
+第五步：读取 flag
+常见路径：
+/flag /api/flag /debug/flag
+
+【7】JS 泄露典型题型
+题型 A：接口隐藏
+示例：
+main.js
+包含：
+/api/admin/login
+直接访问获取权限
+题型 B：测试接口未关闭
+示例：
+/test/login
+绕过认证
+题型 C：SourceMap 泄露源码
+访问：
+main.js.map
+恢复源码获取 flag
+题型 D：密钥泄露
+示例：
+secret_key=“abc123”
+用于伪造 session
+题型 E：前端权限判断绕过
+示例：
+if(role==“admin”)
+直接修改变量绕过
+
+【8】SourceMap 还原源码方法
+方法一：Chrome DevTools
+
+Sources → Add source map
+
+方法二：命令行
+
+npm install source-map-explorer
+
+使用：
+
+source-map-explorer main.js
+
+【9】自动化工具速查
+
+LinkFinder
+
+提取接口路径
+
+SecretFinder
+
+提取密钥信息
+
+JSParser
+
+分析 JS 逻辑
+
+dirsearch
+
+扫描静态目录
+
+Burp Suite
+
+抓包分析
+
+【10】高阶利用技巧
+
+技巧1：拼接隐藏路径
+
+示例：
+
+base=“/api/” path=“admin”
+
+组合：
+
+/api/admin
+
+技巧2：版本接口切换
+
+示例：
+
+/api/v1/login
+
+尝试：
+
+/api/v2/login
+
+技巧3：环境切换
+
+示例：
+
+dev.api.com
+
+尝试：
+
+test.api.com
+
+技巧4：接口参数分析
+
+示例：
+
+login(username,password)
+
+测试：
+
+admin admin
+
+【11】CTF 高频 flag 路径
+
+优先访问：
+
+/flag /flag.txt /api/flag /debug/flag /admin/flag
+
+备用扫描：
+
+find / -name flag* 2>/dev/null
+
+【12】比赛速用万能检查清单
+查看页面源码；抓包 JS 文件；访问 .map 文件；搜索 token；搜索 admin；搜索 debug；访问隐藏接口；读取 flag

